@@ -215,62 +215,6 @@ Random effects:
 
 ---
 
-## 🖼 Figures
-
-### Figure 1 — Alpha Diversity
-![Alpha Diversity](figures/01_alpha_diversity.png)
-*Shannon diversity across BMI groups (KW p = 7.9×10⁻⁸), by sex (Wilcoxon p = 0.039), and Pielou evenness by nationality.*
-
----
-
-### Figure 2 — Beta Diversity & Ordination
-![Beta Diversity](figures/02_beta_diversity.png)
-*PCoA by nationality (Axis1: 27.3%, Axis2: 19.7%) and BMI group; NMDS ordination (stress = 0.201).*
-
----
-
-### Figure 3 — Core Microbiome
-![Core Microbiome](figures/03_core_microbiome.png)
-*Blanket analysis showing core size at varying thresholds (top). Prevalence vs abundance scatter: 56 core taxa in red (bottom).*
-
----
-
-### Figure 4 — Taxonomic Composition
-![Taxonomic Composition](figures/04_taxonomic_composition.png)
-*Relative abundance of top 15 genera averaged by nationality (top) and BMI group (bottom).*
-
----
-
-### Figure 5 — Differentially Abundant Taxa
-![Group Comparisons](figures/05_group_comparisons.png)
-*Bifidobacterium abundance across BMI groups — most significant taxon (BH-FDR = 2.5×10⁻¹⁸).*
-
----
-
-### Figure 6 — Annotated Heatmap
-![Heatmap](figures/06_heatmap.png)
-*Top 25 genera (Z-scored log abundance), Ward.D2 hierarchical clustering, annotated by Sex, BMI group, and Nationality.*
-
----
-
-### Figure 7 — Longitudinal Stability
-![Longitudinal](figures/07_longitudinal.png)
-*Per-subject Shannon trajectories (n = 78) over up to 8.3 months. LMM trend (orange): no significant temporal change (p = 0.692).*
-
----
-
-### Figure 8 — Continuous Associations
-![Associations](figures/08_associations.png)
-*Shannon vs age (Pearson r = −0.147, top). Spearman ρ of top 15 genera against Shannon diversity (bottom).*
-
----
-
-### Figure 9 — Batch Effect
-![Batch Effect](figures/09_batch_effect.png)
-*Shannon diversity by DNA extraction method — significant batch effect requiring covariate correction (KW p < 2.2×10⁻¹⁶).*
-
----
-
 ## 🛠 Packages
 
 | Package | Version | Role |
@@ -315,21 +259,6 @@ Random effects:
   url    = {http://microbiome.github.com/microbiome}
 }
 ```
-
----
-
-## 📬 Contact
-
-**Pundalik Wayal**
-`your.email@institution.edu`
-GitHub: [@your-username](https://github.com/your-username)
-
----
-
-## 📄 License
-
-This project is licensed under the **MIT License** — see [LICENSE](LICENSE) for details.
-
 ---
 
 <p align="center">
