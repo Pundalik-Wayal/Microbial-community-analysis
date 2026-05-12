@@ -1,0 +1,8 @@
+"Analysis","Test","Comparison","Key_Result"
+"Alpha diversity","Kruskal-Wallis","Shannon ~ BMI group","chi2=41.38, p=7.9e-08"
+"Alpha diversity","Kruskal-Wallis","Shannon ~ Nationality","See alpha diversity boxplots"
+"Beta diversity","PERMANOVA (Bray-Curtis)","Community ~ Nationality + DNA method","Nationality R2=NA, p=NA"
+"Beta diversity","PERMANOVA (Bray-Curtis)","Community ~ BMI group","R2=NA, p=NA"
+"Beta diversity","PERMANOVA (Bray-Curtis)","Community ~ Sex","R2=NA, p=NA"
+"Core microbiome","Blanket analysis","Core taxa (50% prev, 0.1% det)","56 core taxa identified"
+"Batch effect","PERMANOVA (Bray-Curtis)","Community ~ DNA method","R2=NA, p=NA"
