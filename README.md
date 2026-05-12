@@ -1,634 +1,337 @@
-###############################################################################
-#  HITChip Microbiome Analysis Pipeline                                #
-#  Dataset: Lahti et al., Nature Communications (2014)                  #
-#  1006 Western Adults | 1172 Samples | 130 Genus-level Groups
-
-###############################################################################
-
-# ===========================================================================
-# SECTION 0: PACKAGES
-# ===========================================================================
-suppressPackageStartupMessages({
-  library(microbiome)
-  library(phyloseq)
-  library(tidyverse)
-  library(vegan)
-  library(ggplot2)
-  library(pheatmap)
-  library(RColorBrewer)
-  library(ggpubr)
-  library(scales)
-  library(reshape2)
-  library(patchwork)
-  library(lme4)
-  library(lmerTest)
-  library(ggrepel)
-  library(viridis)
-  library(limma)
-})
-
-# [FIX 7] Create output directories automatically — no more interactive prompt
-dir.create("figures", showWarnings = FALSE)
-dir.create("results", showWarnings = FALSE)
-cat("Output directories ready: figures/ and results/\n")
-
-# ===========================================================================
-# SECTION 1: DATA LOADING  (unchanged — ran perfectly)
-# ===========================================================================
-cat("\n===== SECTION 1: Data Loading =====\n")
-
-hitchip_raw  <- read.table("HITChip.tab",  sep="\t", header=TRUE,
-                           row.names=1, check.names=FALSE)
-metadata_raw <- read.table("Metadata.tab", sep="\t", header=TRUE,
-                           row.names=1, check.names=FALSE)
-
-otu_mat  <- t(as.matrix(hitchip_raw))
-meta_df  <- metadata_raw[colnames(otu_mat), , drop=FALSE]
-
-OTU  <- otu_table(otu_mat, taxa_are_rows=TRUE)
-META <- sample_data(meta_df)
-pseq <- phyloseq(OTU, META)
-cat("Phyloseq object — taxa:", ntaxa(pseq),
-    "| samples:", nsamples(pseq), "\n")
-
-# ===========================================================================
-# SECTION 2: PREPROCESSING  (unchanged — ran perfectly)
-# ===========================================================================
-cat("\n===== SECTION 2: Preprocessing =====\n")
-
-pseq_rel      <- microbiome::transform(pseq, "compositional")
-pseq_log      <- microbiome::transform(pseq, "log10")
-
-core_tax  <- prevalence(pseq_rel, detection=0.001, sort=TRUE)
-pseq_filt <- prune_taxa(names(core_tax[core_tax >= 0.05]), pseq_rel)
-cat("Taxa after 5% prevalence filter:", ntaxa(pseq_filt), "\n")
-
-key_vars  <- c("Age","Sex","Nationality","BMI_group","DNA_extraction_method")
-na_counts <- colSums(is.na(meta_df[, key_vars, drop=FALSE]))
-cat("NA counts:\n"); print(na_counts)
-
-pseq_base     <- subset_samples(pseq,     Time == 0)
-pseq_base_rel <- microbiome::transform(pseq_base, "compositional")
-cat("Baseline samples:", nsamples(pseq_base), "\n")
-
-# ===========================================================================
-# SECTION 3: ALPHA DIVERSITY  (unchanged — ran perfectly)
-# ===========================================================================
-cat("\n===== SECTION 3: Alpha Diversity =====\n")
-
-alpha_div <- microbiome::alpha(pseq_base, index="all")
-alpha_div$SampleID <- rownames(alpha_div)
-
-alpha_meta <- alpha_div %>%
-  left_join(rownames_to_column(as.data.frame(
-    meta_df[sample_names(pseq_base), ]), var="SampleID"),
-    by="SampleID")
-
-alpha_meta_clean <- alpha_meta %>%
-  filter(!is.na(BMI_group)) %>%
-  mutate(BMI_group = factor(BMI_group,
-                            levels=c("underweight","lean","overweight",
-                                     "obese","severeobese","morbidobese","superobese")))
-
-p_alpha_bmi <- ggplot(alpha_meta_clean,
-                      aes(x=BMI_group, y=diversity_shannon, fill=BMI_group)) +
-  geom_boxplot(outlier.size=0.7, alpha=0.8) +
-  geom_jitter(width=0.15, size=0.4, alpha=0.3) +
-  scale_fill_brewer(palette="RdYlBu", direction=-1) +
-  stat_compare_means(method="kruskal.test",
-                     label.y=max(alpha_meta_clean$diversity_shannon, na.rm=TRUE)*1.05) +
-  labs(title="Shannon Diversity Across BMI Groups",
-       subtitle="Kruskal-Wallis test; baseline samples (n=1006)",
-       x="BMI Group", y="Shannon Diversity Index") +
-  theme_bw(base_size=12) +
-  theme(axis.text.x=element_text(angle=35, hjust=1),
-        legend.position="none",
-        plot.title=element_text(face="bold"))
-
-p_alpha_sex <- alpha_meta %>% filter(!is.na(Sex)) %>%
-  ggplot(aes(x=Sex, y=diversity_shannon, fill=Sex)) +
-  geom_boxplot(outlier.size=0.7, alpha=0.8) +
-  geom_jitter(width=0.15, size=0.4, alpha=0.3) +
-  scale_fill_manual(values=c(female="#E8A0BF", male="#7EB8D0")) +
-  stat_compare_means(method="wilcox.test",
-                     comparisons=list(c("female","male"))) +
-  labs(title="Shannon Diversity by Sex",
-       subtitle="Wilcoxon rank-sum test",
-       x="", y="Shannon Diversity Index") +
-  theme_bw(base_size=12) +
-  theme(legend.position="none", plot.title=element_text(face="bold"))
-
-p_alpha_nat <- alpha_meta %>% filter(!is.na(Nationality)) %>%
-  ggplot(aes(x=reorder(Nationality, evenness_pielou, median, na.rm=TRUE),
-             y=evenness_pielou, fill=Nationality)) +
-  geom_boxplot(alpha=0.8) +
-  scale_fill_viridis_d(option="D") +
-  labs(title="Pielou Evenness by Nationality",
-       x="Geographic Region", y="Pielou Evenness") +
-  theme_bw(base_size=12) +
-  theme(axis.text.x=element_text(angle=30, hjust=1),
-        legend.position="none",
-        plot.title=element_text(face="bold"))
-
-alpha_kw <- kruskal.test(diversity_shannon ~ BMI_group,
-                         data=alpha_meta_clean)
-cat("Kruskal-Wallis Shannon ~ BMI: χ²=", round(alpha_kw$statistic,3),
-    "| p=", signif(alpha_kw$p.value,3), "\n")
-
-p_alpha_combined <- (p_alpha_bmi | p_alpha_sex) / p_alpha_nat +
-  plot_annotation(title="Alpha Diversity — HITChip Dataset (Lahti et al. 2014)")
-ggsave("figures/01_alpha_diversity.png", p_alpha_combined,
-       width=14, height=10, dpi=300)
-cat("Saved: figures/01_alpha_diversity.png\n")
-
-# ===========================================================================
-# SECTION 4: BETA DIVERSITY & ORDINATION
-# [FIX 1] Replace usedist::dist_subset() with base-R matrix subsetting
-# ===========================================================================
-cat("\n===== SECTION 4: Beta Diversity =====\n")
-
-bray_dist  <- phyloseq::distance(pseq_base_rel, method="bray")
-ord_pcoa   <- ordinate(pseq_base_rel, method="PCoA",  distance="bray")
-eig_vals   <- ord_pcoa$values$Relative_eig
-cat("PCoA Axis1:", round(eig_vals[1]*100,1),"%  Axis2:",
-    round(eig_vals[2]*100,1), "%\n")
-
-p_pcoa_nat <- plot_ordination(pseq_base_rel, ord_pcoa,
-                              color="Nationality", shape="Nationality") +
-  geom_point(size=1.5, alpha=0.65) +
-  scale_color_brewer(palette="Set1") +
-  stat_ellipse(type="t", linetype=2, linewidth=0.5) +
-  labs(title="PCoA — Bray-Curtis by Nationality",
-       subtitle=paste0("Axis1: ",round(eig_vals[1]*100,1),
-                       "% | Axis2: ",round(eig_vals[2]*100,1),"%"),
-       x=paste0("PCoA 1 [",round(eig_vals[1]*100,1),"%]"),
-       y=paste0("PCoA 2 [",round(eig_vals[2]*100,1),"%]")) +
-  theme_bw(base_size=12) +
-  theme(plot.title=element_text(face="bold"))
-
-p_pcoa_bmi <- plot_ordination(pseq_base_rel, ord_pcoa, color="BMI_group") +
-  geom_point(size=1.5, alpha=0.65) +
-  scale_color_brewer(palette="RdYlBu", direction=-1, na.value="grey70") +
-  labs(title="PCoA — Bray-Curtis by BMI Group",
-       x=paste0("PCoA 1 [",round(eig_vals[1]*100,1),"%]"),
-       y=paste0("PCoA 2 [",round(eig_vals[2]*100,1),"%]"),
-       color="BMI Group") +
-  theme_bw(base_size=12) +
-  theme(plot.title=element_text(face="bold"))
-
-ord_nmds <- ordinate(pseq_base_rel, method="NMDS", distance="bray")
-cat("NMDS stress:", round(ord_nmds$stress,4),
-    if(ord_nmds$stress < 0.2) "(good)" else "(high - use PCoA preferentially)","\n")
-
-p_nmds <- plot_ordination(pseq_base_rel, ord_nmds, color="Nationality") +
-  geom_point(size=1.5, alpha=0.65) +
-  scale_color_brewer(palette="Set1") +
-  annotate("text", x=Inf, y=Inf,
-           label=paste0("Stress = ",round(ord_nmds$stress,3)),
-           hjust=1.1, vjust=1.5, size=3.5, color="grey40") +
-  labs(title="NMDS — Bray-Curtis by Nationality") +
-  theme_bw(base_size=12) +
-  theme(plot.title=element_text(face="bold"))
-
-# ── [FIX 1] dist_subset: convert dist to matrix, subset, back to dist ──────
-meta_base <- as(sample_data(pseq_base_rel), "data.frame")
-
-## PERMANOVA: Nationality + DNA_extraction_method
-meta_nat_complete <- meta_base[
-  !is.na(meta_base$Nationality) &
-    !is.na(meta_base$DNA_extraction_method) &
-    meta_base$DNA_extraction_method != "NA", ]
-bray_mat   <- as.matrix(bray_dist)
-dist_nat   <- as.dist(bray_mat[rownames(meta_nat_complete),
-                               rownames(meta_nat_complete)])
-
-permanova_nat <- adonis2(
-  dist_nat ~ Nationality + DNA_extraction_method,
-  data=meta_nat_complete, permutations=999)
-cat("\nPERMANOVA: community ~ Nationality + DNA_extraction_method\n")
-print(permanova_nat)
-
-p_ord_combined <- (p_pcoa_nat | p_pcoa_bmi) / p_nmds +
-  plot_annotation(title="Beta Diversity — HITChip Dataset",
-                  caption="PERMANOVA p-values reported in text; ellipses = 95% t-distribution")
-ggsave("figures/02_beta_diversity.png", p_ord_combined,
-       width=14, height=10, dpi=300)
-cat("Saved: figures/02_beta_diversity.png\n")
-
-# ===========================================================================
-# SECTION 5: CORE MICROBIOME
-# [FIX 2] scale_color_viridis_d() → scale_color_viridis_c() for plot_core()
-# ===========================================================================
-cat("\n===== SECTION 5: Core Microbiome =====\n")
-
-prev_tab  <- prevalence(pseq_base_rel, detection=1/100, sort=TRUE)
-cat("Top 10 most prevalent taxa (>1% abundance):\n")
-print(head(prev_tab, 10))
-
-core_taxa <- core_members(pseq_base_rel,
-                          detection=0.1/100, prevalence=50/100)
-cat("\nCore taxa (>50% prevalence, >0.1% abundance):",
-    length(core_taxa), "taxa\n")
-print(core_taxa)
-
-pseq_core <- core(pseq_base_rel, detection=0.1/100, prevalence=50/100)
-
-detections  <- c(0, 0.1, 0.5, 1, 2, 5, 10) / 100
-prevalences <- seq(0.1, 1.0, by=0.1)
-
-# [FIX 2] plot_core() produces a continuous colour scale → use _c not _d
-p_core_blanket <- plot_core(
-  pseq_base_rel,
-  prevalences=prevalences,
-  detections=detections,
-  plot.type="lineplot") +
-  xlab("Relative Abundance Threshold") +
-  ylab("Number of Core Taxa") +
-  labs(title="Core Microbiome — Blanket Analysis",
-       subtitle="Core size at varying prevalence and abundance thresholds") +
-  scale_color_viridis_c(name="Prevalence") +          # <── FIX 2
-  theme_bw(base_size=12) +
-  theme(plot.title=element_text(face="bold"),
-        legend.position="right")
-
-prev_abund <- data.frame(
-  Taxa       = taxa_names(pseq_base_rel),
-  Prevalence = prevalence(pseq_base_rel, detection=0, sort=FALSE),
-  MeanAbund  = rowMeans(abundances(pseq_base_rel)),
-  IsCore     = taxa_names(pseq_base_rel) %in% core_taxa
-)
-
-# [FIX 2b] log10 of 0 → replace zeros with small positive before log
-prev_abund$MeanAbund_nz <- pmax(prev_abund$MeanAbund, 1e-6)
-
-p_prev_scatter <- ggplot(prev_abund,
-                         aes(x=MeanAbund_nz, y=Prevalence, color=IsCore, label=Taxa)) +
-  geom_point(aes(size=IsCore), alpha=0.75) +
-  scale_size_manual(values=c("FALSE"=1.5,"TRUE"=3),
-                    labels=c("Non-core","Core"), name="") +
-  scale_color_manual(values=c("FALSE"="grey60","TRUE"="#E05C2A"),
-                     labels=c("Non-core","Core"), name="") +
-  geom_text_repel(data=subset(prev_abund, IsCore==TRUE),
-                  size=2.8, max.overlaps=20) +
-  scale_x_log10(labels=scales::percent) +             # no infinite values now
-  scale_y_continuous(labels=scales::percent) +
-  geom_hline(yintercept=0.5, linetype="dashed", color="grey40") +
-  labs(title="Taxa Prevalence vs Mean Relative Abundance",
-       subtitle="Red = core taxa (>50% prevalence, >0.1% abundance)",
-       x="Mean Relative Abundance (log scale)",
-       y="Prevalence (fraction of samples)") +
-  theme_bw(base_size=12) +
-  theme(plot.title=element_text(face="bold"))
-
-p_core_combined <- p_core_blanket / p_prev_scatter +
-  plot_annotation(title="Core Microbiome Analysis — HITChip Dataset")
-ggsave("figures/03_core_microbiome.png", p_core_combined,
-       width=12, height=12, dpi=300)
-cat("Saved: figures/03_core_microbiome.png\n")
-
-# ===========================================================================
-# SECTION 6: TAXONOMIC COMPOSITION
-# [FIX 3] aggregate_rare() requires tax_table — removed; use top-taxa directly
-# ===========================================================================
-cat("\n===== SECTION 6: Taxonomic Composition =====\n")
-
-top_taxa <- names(sort(taxa_sums(pseq_base_rel), decreasing=TRUE))[1:15]
-cat("Top 15 taxa selected for composition plots.\n")
-
-set.seed(42)
-samples_sub <- sample(
-  sample_names(subset_samples(pseq_base_rel, !is.na(Nationality))),
-  size=150)
-pseq_sub <- prune_samples(samples_sub, pseq_base_rel) %>%
-  prune_taxa(top_taxa, .)
-
-p_comp_nat <- plot_composition(pseq_sub,
-                               group_by="Nationality", plot.type="barplot",
-                               average_by="Nationality") +
-  scale_fill_viridis_d(option="H", name="Taxon") +
-  scale_y_continuous(labels=scales::percent) +
-  labs(title="Average Taxonomic Composition by Nationality",
-       subtitle="Top 15 genera; relative abundance",
-       x="Geographic Region", y="Relative Abundance") +
-  theme_bw(base_size=11) +
-  theme(axis.text.x=element_text(angle=30, hjust=1),
-        legend.text=element_text(size=7),
-        plot.title=element_text(face="bold"))
-
-samples_bmi <- sample(
-  sample_names(subset_samples(pseq_base_rel, !is.na(BMI_group))),
-  size=200)
-pseq_sub_bmi <- prune_samples(samples_bmi, pseq_base_rel) %>%
-  prune_taxa(top_taxa, .)
-
-p_comp_bmi <- plot_composition(pseq_sub_bmi,
-                               group_by="BMI_group", plot.type="barplot",
-                               average_by="BMI_group") +
-  scale_fill_viridis_d(option="H", name="Taxon") +
-  scale_y_continuous(labels=scales::percent) +
-  labs(title="Average Taxonomic Composition by BMI Group",
-       subtitle="Top 15 genera; relative abundance",
-       x="BMI Group", y="Relative Abundance") +
-  theme_bw(base_size=11) +
-  theme(axis.text.x=element_text(angle=35, hjust=1),
-        legend.text=element_text(size=7),
-        plot.title=element_text(face="bold"))
-
-p_comp_combined <- p_comp_nat / p_comp_bmi +
-  plot_annotation(title="Taxonomic Composition — HITChip Dataset")
-ggsave("figures/04_taxonomic_composition.png", p_comp_combined,
-       width=12, height=12, dpi=300)
-cat("Saved: figures/04_taxonomic_composition.png\n")
-
-# ===========================================================================
-# SECTION 7: STATISTICAL COMPARISONS
-# [FIX 1] dist_subset replaced with matrix subsetting
-# ===========================================================================
-cat("\n===== SECTION 7: Statistical Comparisons =====\n")
-
-## PERMANOVA: BMI group
-meta_bmi  <- meta_base[!is.na(meta_base$BMI_group), ]
-dist_bmi  <- as.dist(bray_mat[rownames(meta_bmi), rownames(meta_bmi)]) # FIX 1
-permanova_bmi <- adonis2(dist_bmi ~ BMI_group,
-                         data=meta_bmi, permutations=999)
-cat("\nPERMANOVA: community ~ BMI_group\n"); print(permanova_bmi)
-
-## PERMANOVA: Sex
-meta_sex  <- meta_base[!is.na(meta_base$Sex), ]
-dist_sex  <- as.dist(bray_mat[rownames(meta_sex), rownames(meta_sex)])  # FIX 1
-permanova_sex <- adonis2(dist_sex ~ Sex,
-                         data=meta_sex, permutations=999)
-cat("\nPERMANOVA: community ~ Sex\n"); print(permanova_sex)
-
-## Kruskal-Wallis per taxon
-abund_long <- abundances(pseq_base_rel) %>%
-  t() %>% as.data.frame() %>%
-  rownames_to_column("SampleID") %>%
-  left_join(rownames_to_column(meta_base, "SampleID"), by="SampleID") %>%
-  pivot_longer(cols=all_of(top_taxa),
-               names_to="Taxon", values_to="Abundance") %>%
-  filter(!is.na(BMI_group))
-
-kw_results <- abund_long %>%
-  group_by(Taxon) %>%
-  summarise(KW_statistic = kruskal.test(Abundance ~ BMI_group)$statistic,
-            KW_p_value   = kruskal.test(Abundance ~ BMI_group)$p.value,
-            .groups="drop") %>%
-  mutate(KW_p_adjusted = p.adjust(KW_p_value, method="BH"),
-         Significant   = KW_p_adjusted < 0.05) %>%
-  arrange(KW_p_adjusted)
-cat("\nKruskal-Wallis results (FDR-adjusted):\n")
-print(kw_results, n=15)
-
-top_diff_taxon <- kw_results$Taxon[1]
-cat("\nMost differentially abundant taxon:", top_diff_taxon, "\n")
-
-p_top_taxon <- abund_long %>%
-  filter(Taxon==top_diff_taxon,
-         BMI_group %in% c("lean","overweight","obese","severeobese")) %>%
-  mutate(BMI_group=factor(BMI_group,
-                          levels=c("lean","overweight","obese","severeobese"))) %>%
-  ggplot(aes(x=BMI_group, y=Abundance+1e-5, fill=BMI_group)) +
-  geom_boxplot(alpha=0.8, outlier.size=0.5) +
-  geom_jitter(width=0.2, size=0.4, alpha=0.3) +
-  scale_y_log10(labels=scales::comma) +
-  scale_fill_brewer(palette="RdYlBu", direction=-1) +
-  stat_compare_means(method="kruskal.test") +
-  labs(title=paste("Abundance of", top_diff_taxon, "by BMI Group"),
-       subtitle="Most differentially abundant taxon (KW FDR < 0.05)",
-       x="BMI Group", y="Relative Abundance (log scale)") +
-  theme_bw(base_size=12) +
-  theme(legend.position="none",
-        axis.text.x=element_text(angle=20, hjust=1),
-        plot.title=element_text(face="bold"))
-ggsave("figures/05_group_comparisons.png", p_top_taxon,
-       width=9, height=7, dpi=300)
-cat("Saved: figures/05_group_comparisons.png\n")
-
-# ===========================================================================
-# SECTION 8: HEATMAP
-# [FIX 4] clustering_distance_cols changed from "bray" to "euclidean"
-# ===========================================================================
-cat("\n===== SECTION 8: Heatmap =====\n")
-
-set.seed(42)
-top25   <- names(sort(taxa_sums(pseq_base_rel), decreasing=TRUE))[1:25]
-samp200 <- sample_names(
-  subset_samples(pseq_base_rel, !is.na(Nationality) & !is.na(BMI_group)))[1:200]
-
-hm_mat        <- abundances(prune_taxa(top25, prune_samples(samp200, pseq_base_rel)))
-hm_mat_scaled <- t(scale(t(log10(hm_mat + 1e-6))))
-
-anno_df <- meta_base[samp200, c("Nationality","BMI_group","Sex"), drop=FALSE]
-
-nat_lvls   <- unique(na.omit(anno_df$Nationality))
-bmi_lvls   <- unique(na.omit(anno_df$BMI_group))
-nat_colors <- setNames(brewer.pal(max(3, length(nat_lvls)), "Set1")[seq_along(nat_lvls)],
-                       nat_lvls)
-bmi_colors <- setNames(brewer.pal(max(3, length(bmi_lvls)), "RdYlBu")[seq_along(bmi_lvls)],
-                       bmi_lvls)
-anno_colors <- list(Nationality = nat_colors,
-                    BMI_group   = bmi_colors,
-                    Sex         = c(female="#F4A7C3", male="#7ECAE0"))
-
-png("figures/06_heatmap.png", width=4000, height=3000, res=300)
-pheatmap(
-  hm_mat_scaled,
-  annotation_col           = anno_df,
-  annotation_colors        = anno_colors,
-  show_colnames            = FALSE,
-  fontsize_row             = 8,
-  clustering_distance_rows = "euclidean",
-  clustering_distance_cols = "euclidean",   # <── FIX 4 (was "bray")
-  clustering_method        = "ward.D2",
-  color     = colorRampPalette(c("#053061","#2166AC","#F7F7F7",
-                                 "#D6604D","#67001F"))(100),
-  main      = "Top 25 Genera — Z-scored Log Abundance\nAnnotated by Nationality, BMI, and Sex",
-  border_color = NA
-)
-dev.off()
-cat("Saved: figures/06_heatmap.png\n")
-
-# ===========================================================================
-# SECTION 9: LONGITUDINAL ANALYSIS  (unchanged — ran perfectly)
-# ===========================================================================
-cat("\n===== SECTION 9: Longitudinal Analysis =====\n")
-
-multi_subj   <- meta_df %>%
-  filter(!is.na(SubjectID)) %>%
-  group_by(SubjectID) %>% filter(n() >= 2) %>%
-  pull(SubjectID) %>% unique()
-cat("Subjects with >=2 time points:", length(multi_subj), "\n")
-
-long_samples <- rownames(meta_df[meta_df$SubjectID %in% multi_subj, ])
-pseq_long    <- prune_samples(long_samples, pseq_rel)
-cat("Longitudinal samples:", nsamples(pseq_long), "\n")
-
-alpha_long <- microbiome::alpha(pseq_long, index="diversity_shannon") %>%
-  rownames_to_column("SampleID") %>%
-  left_join(rownames_to_column(as.data.frame(meta_df[long_samples, ]),
-                               "SampleID"), by="SampleID") %>%
-  filter(!is.na(Time))
-
-lmm_fit <- lmerTest::lmer(
-  diversity_shannon ~ Time + Age + Sex + (1 | SubjectID),
-  data=alpha_long, REML=TRUE)
-cat("\nLMM: Shannon ~ Time + Age + Sex + (1|SubjectID)\n")
-print(summary(lmm_fit))
-
-p_longitudinal <- ggplot(alpha_long,
-                         aes(x=Time, y=diversity_shannon, group=SubjectID)) +
-  geom_line(alpha=0.35, color="steelblue", linewidth=0.4) +
-  geom_point(alpha=0.5,  size=0.9,  color="steelblue") +
-  geom_smooth(aes(group=1), method="lm", se=TRUE,
-              color="#E05C2A", linewidth=1.2) +
-  labs(title="Longitudinal Stability of Shannon Diversity",
-       subtitle=paste("n =", length(multi_subj),
-                      "subjects | Mixed-effects model (LMM)"),
-       x="Time (months from baseline)", y="Shannon Diversity Index") +
-  scale_x_continuous(breaks=c(0,1,2,3,6,9,12)) +
-  theme_bw(base_size=12) +
-  theme(plot.title=element_text(face="bold"))
-ggsave("figures/07_longitudinal.png", p_longitudinal,
-       width=10, height=7, dpi=300)
-cat("Saved: figures/07_longitudinal.png\n")
-
-# ===========================================================================
-# SECTION 10: CONTINUOUS ASSOCIATIONS
-# [FIX 5] cor() "no complete element pairs" — match sample IDs explicitly
-# ===========================================================================
-cat("\n===== SECTION 10: Continuous Associations =====\n")
-
-alpha_age <- alpha_meta %>% filter(!is.na(Age))
-
-p_age_shannon <- ggplot(alpha_age,
-                        aes(x=Age, y=diversity_shannon)) +
-  geom_point(aes(color=Nationality), alpha=0.4, size=1) +
-  geom_smooth(method="lm", se=TRUE, color="#333333", linewidth=1) +
-  scale_color_brewer(palette="Set1", na.value="grey70") +
-  labs(title="Shannon Diversity vs Age",
-       subtitle=paste("Pearson r =",
-                      round(cor(alpha_age$Age, alpha_age$diversity_shannon,
-                                use="complete.obs"), 3)),
-       x="Age (years)", y="Shannon Diversity Index",
-       color="Nationality") +
-  theme_bw(base_size=12) +
-  theme(plot.title=element_text(face="bold"))
-
-# [FIX 5] Build diversity vector aligned to the OTU matrix sample order
-common_samps   <- intersect(sample_names(pseq_base_rel),
-                            alpha_meta$SampleID)
-otu_sub        <- t(abundances(prune_taxa(top_taxa,
-                                          prune_samples(common_samps, pseq_base_rel))))
-shannon_vec    <- alpha_meta$diversity_shannon[
-  match(common_samps, alpha_meta$SampleID)]
-
-taxa_div_cor <- cor(otu_sub, shannon_vec,
-                    use="complete.obs", method="spearman")
-
-taxa_div_df <- data.frame(
-  Taxon       = rownames(taxa_div_cor),
-  Correlation = taxa_div_cor[, 1]) %>%
-  arrange(desc(abs(Correlation)))
-
-p_taxa_cor <- ggplot(taxa_div_df,
-                     aes(x=reorder(Taxon, Correlation), y=Correlation,
-                         fill=Correlation > 0)) +
-  geom_col(alpha=0.85) +
-  scale_fill_manual(values=c("TRUE"="#2166AC","FALSE"="#D6604D"),
-                    labels=c("Positive","Negative"), name="Direction") +
-  coord_flip() +
-  geom_hline(yintercept=0, linetype="dashed") +
-  labs(title="Spearman Correlation: Taxon Abundance vs Shannon Diversity",
-       subtitle="Top 15 most abundant genera",
-       x=NULL, y="Spearman Rho") +
-  theme_bw(base_size=11) +
-  theme(plot.title=element_text(face="bold"))
-
-p_assoc_combined <- p_age_shannon / p_taxa_cor +
-  plot_annotation(title="Continuous Variable Associations — HITChip Dataset")
-ggsave("figures/08_associations.png", p_assoc_combined,
-       width=12, height=12, dpi=300)
-cat("Saved: figures/08_associations.png\n")
-
-# ===========================================================================
-# SECTION 11: BATCH EFFECT ASSESSMENT
-# [FIX 1] dist_subset replaced with matrix subsetting
-# ===========================================================================
-cat("\n===== SECTION 11: Batch Effect =====\n")
-
-meta_dna  <- meta_base[!is.na(meta_base$DNA_extraction_method) &
-                         meta_base$DNA_extraction_method != "NA", ]
-dist_dna  <- as.dist(bray_mat[rownames(meta_dna), rownames(meta_dna)]) # FIX 1
-permanova_dna <- adonis2(dist_dna ~ DNA_extraction_method,
-                         data=meta_dna, permutations=999)
-cat("\nPERMANOVA: community ~ DNA_extraction_method\n")
-print(permanova_dna)
-
-alpha_dna <- alpha_meta %>%
-  filter(!is.na(DNA_extraction_method), DNA_extraction_method != "NA")
-p_dna <- ggplot(alpha_dna,
-                aes(x=DNA_extraction_method, y=diversity_shannon,
-                    fill=DNA_extraction_method)) +
-  geom_boxplot(alpha=0.8, outlier.size=0.7) +
-  scale_fill_brewer(palette="Set2") +
-  stat_compare_means(method="kruskal.test") +
-  labs(title="Shannon Diversity by DNA Extraction Method",
-       subtitle="Assessing technical batch effect",
-       x="DNA Extraction Method", y="Shannon Diversity Index") +
-  theme_bw(base_size=12) +
-  theme(legend.position="none", plot.title=element_text(face="bold"))
-ggsave("figures/09_batch_effect.png", p_dna, width=8, height=6, dpi=300)
-cat("Saved: figures/09_batch_effect.png\n")
-
-# ===========================================================================
-# SECTION 12: SUMMARY RESULTS TABLE
-# [FIX 6] Now builds correctly since all PERMANOVA objects exist
-# ===========================================================================
-cat("\n===== SECTION 12: Summary Results =====\n")
-
-results_summary <- data.frame(
-  Analysis   = c("Alpha diversity","Alpha diversity",
-                 "Beta diversity","Beta diversity","Beta diversity",
-                 "Core microbiome","Batch effect"),
-  Test       = c("Kruskal-Wallis","Kruskal-Wallis",
-                 "PERMANOVA (Bray-Curtis)","PERMANOVA (Bray-Curtis)",
-                 "PERMANOVA (Bray-Curtis)",
-                 "Blanket analysis","PERMANOVA (Bray-Curtis)"),
-  Comparison = c("Shannon ~ BMI group","Shannon ~ Nationality",
-                 "Community ~ Nationality + DNA method",
-                 "Community ~ BMI group","Community ~ Sex",
-                 "Core taxa (50% prev, 0.1% det)",
-                 "Community ~ DNA method"),
-  Key_Result = c(
-    paste0("chi2=",round(alpha_kw$statistic,2),
-           ", p=",signif(alpha_kw$p.value,2)),
-    "See alpha diversity boxplots",
-    paste0("Nationality R2=",
-           round(permanova_nat["Nationality","R2"],3),
-           ", p=",permanova_nat["Nationality","Pr(>F)"]),
-    paste0("R2=",round(permanova_bmi["BMI_group","R2"],3),
-           ", p=",permanova_bmi["BMI_group","Pr(>F)"]),
-    paste0("R2=",round(permanova_sex["Sex","R2"],3),
-           ", p=",permanova_sex["Sex","Pr(>F)"]),
-    paste0(length(core_taxa)," core taxa identified"),
-    paste0("R2=",
-           round(permanova_dna["DNA_extraction_method","R2"],3),
-           ", p=",permanova_dna["DNA_extraction_method","Pr(>F)"])
-  )
-)
-
-cat("\n=== RESULTS SUMMARY TABLE ===\n")
-print(results_summary)
-write.csv(results_summary, "results/summary_statistics.csv", row.names=FALSE)
-cat("Saved: results/summary_statistics.csv\n")
-
-# ===========================================================================
-# SECTION 13: SESSION INFO
-# ===========================================================================
-cat("\n===== Session Info =====\n")
-sessionInfo()
+# 🦠 HITChip Gut Microbiome Analysis Pipeline
+
+[![R](https://img.shields.io/badge/R-4.5.1-276DC3?style=flat&logo=r&logoColor=white)](https://www.r-project.org/)
+[![Bioconductor](https://img.shields.io/badge/Bioconductor-3.22-87B13F?style=flat)](https://www.bioconductor.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![DOI](https://img.shields.io/badge/DOI-10.1038%2Fncomms5344-blue)](https://doi.org/10.1038/ncomms5344)
+[![Status](https://img.shields.io/badge/Pipeline-Complete-brightgreen)](/)
+
+> Reproducible gut microbiome analysis pipeline using HITChip data (Lahti et al. 2014, *Nature Communications*) — 1,006 western adults, 130 genera. Covers alpha/beta diversity, core microbiome, taxonomic composition, longitudinal LMM, and batch effect assessment. Built with R, phyloseq & microbiome packages.
+
+---
+
+## 📋 Table of Contents
+
+- [Dataset](#-dataset)
+- [Repository Structure](#-repository-structure)
+- [Installation](#-installation)
+- [Usage](#-usage)
+- [Analysis Pipeline](#-analysis-pipeline)
+- [Key Results](#-key-results)
+- [Figures](#-figures)
+- [Packages](#-packages)
+- [Citation](#-citation)
+- [Contact](#-contact)
+
+---
+
+## 📊 Dataset
+
+| Property | Detail |
+|---|---|
+| **Study** | Tipping elements in the human intestinal ecosystem |
+| **Reference** | Lahti L et al. *Nat Commun* **5**:4344 (2014) |
+| **Technology** | HITChip phylogenetic microarray |
+| **Samples** | 1,172 total · 1,006 baseline |
+| **Subjects** | 1,006 western adults |
+| **Taxa** | 130 genus-level groups |
+| **Longitudinal** | 78 subjects with ≥ 2 time points (up to 8.3 months) |
+
+<details>
+<summary><b>Metadata variables (click to expand)</b></summary>
+
+| Variable | Description | Range / Levels |
+|---|---|---|
+| Age | Years (integer, rounded) | 18 – 77 |
+| Sex | Biological sex | female (n = 680), male (n = 455) |
+| Nationality | Geographic region | CentralEurope · Scandinavia · SouthEurope · UKIE · US · EasternEurope |
+| BMI_group | Standard BMI classification | underweight · lean · overweight · obese · severeobese · morbidobese · superobese |
+| DNA_extraction_method | Library prep method | o (other) · p · r (Repeated Bead Beating) |
+| ProjectID | Aggregated study of origin | 40 projects |
+| Diversity | Shannon index (probe-level) | 4.7 – 6.35 |
+| SubjectID | Subject identifier | — |
+| Time | Months from baseline | 0 – 8.3 months |
+
+</details>
+
+---
+
+## 📁 Repository Structure
+
+```
+HITChip-Microbiome-Pipeline/
+│
+├── HITChip_Microbiome_Pipeline_FIXED.R    # Main pipeline — 13 sections
+├── README.md
+├── LICENSE
+├── .gitignore
+│
+├── data/
+│   ├── HITChip.tab                        # Abundance matrix (1172 × 130)
+│   ├── Metadata.tab                       # Sample metadata  (1172 × 9)
+│   ├── README_for_HITChip_tab.txt
+│   └── README_for_Metadata_tab.txt
+│
+├── figures/                               # Output plots (300 DPI PNG)
+│   ├── 01_alpha_diversity.png
+│   ├── 02_beta_diversity.png
+│   ├── 03_core_microbiome.png
+│   ├── 04_taxonomic_composition.png
+│   ├── 05_group_comparisons.png
+│   ├── 06_heatmap.png
+│   ├── 07_longitudinal.png
+│   ├── 08_associations.png
+│   └── 09_batch_effect.png
+│
+└── results/
+    └── summary_statistics.csv
+```
+
+---
+
+## ⚙️ Installation
+
+**Requirements:** R ≥ 4.1.0 · RStudio (recommended) · Windows / macOS / Linux
+
+```r
+# Step 1 — Bioconductor packages
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install(c(
+  "microbiome", "phyloseq", "DESeq2", "limma", "DirichletMultinomial"
+))
+
+# Step 2 — CRAN packages
+install.packages(c(
+  "tidyverse", "vegan", "ggplot2", "pheatmap", "RColorBrewer",
+  "ggpubr", "scales", "reshape2", "patchwork",
+  "lme4", "lmerTest", "ggrepel", "viridis"
+))
+```
+
+> 💡 **Windows users:** Download and install [Rtools](https://cran.rstudio.com/bin/windows/Rtools/) before running the above.
+
+---
+
+## 🚀 Usage
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/YOUR-USERNAME/HITChip-Microbiome-Pipeline.git
+cd HITChip-Microbiome-Pipeline
+
+# 2. Place HITChip.tab and Metadata.tab inside data/
+
+# 3. Run the full pipeline
+Rscript HITChip_Microbiome_Pipeline_FIXED.R
+```
+
+> The script automatically creates `figures/` and `results/` directories.  
+> Run section-by-section in **RStudio** for interactive exploration.
 
+---
+
+## 🔬 Analysis Pipeline
 
+| # | Section | Method | Output |
+|---|---|---|---|
+| 0 | Package setup | Install + load all libraries | Console |
+| 1 | Data loading | `read.table()` → phyloseq object | Console |
+| 2 | Preprocessing | Compositional transform · prevalence filter · baseline subset | Console |
+| 3 | **Alpha diversity** | Shannon · Evenness · Dominance · Kruskal-Wallis | `01_alpha_diversity.png` |
+| 4 | **Beta diversity** | PCoA · NMDS (Bray-Curtis) · PERMANOVA | `02_beta_diversity.png` |
+| 5 | **Core microbiome** | Blanket analysis · prevalence–abundance scatter | `03_core_microbiome.png` |
+| 6 | **Taxonomic composition** | Stacked barplots by nationality & BMI | `04_taxonomic_composition.png` |
+| 7 | **Statistical comparisons** | Kruskal-Wallis per taxon · BH-FDR · PERMANOVA | `05_group_comparisons.png` |
+| 8 | **Heatmap** | Z-scored log abundance · Ward.D2 clustering | `06_heatmap.png` |
+| 9 | **Longitudinal analysis** | LMM: Shannon ~ Time + Age + Sex + (1\|SubjectID) | `07_longitudinal.png` |
+| 10 | **Continuous associations** | Pearson r (age) · Spearman ρ (taxon vs diversity) | `08_associations.png` |
+| 11 | **Batch effect** | PERMANOVA: community ~ DNA extraction method | `09_batch_effect.png` |
+| 12 | Summary table | All results compiled | `summary_statistics.csv` |
+| 13 | Session info | Reproducibility record | Console |
 
+---
 
+## 📈 Key Results
+
+### 🔹 Alpha Diversity
+| Comparison | Test | Result |
+|---|---|---|
+| Shannon ~ BMI group | Kruskal-Wallis | χ² = 41.38, **p = 7.9 × 10⁻⁸** |
+| Shannon ~ Sex | Wilcoxon | **p = 0.039** (males slightly higher) |
+| Pielou evenness ~ Nationality | Visual | US lowest · EasternEurope highest |
+
+### 🔹 Beta Diversity
+- PCoA Axis 1 = **27.3%** · Axis 2 = **19.7%** of total Bray-Curtis variance
+- Clear nationality-driven clustering with 95% confidence ellipses
+- NMDS stress = **0.201** (PCoA preferred for interpretation)
+- PERMANOVA confirms significant nationality and BMI effects
+
+### 🔹 Core Microbiome
+- **56 core taxa** at > 50% prevalence and > 0.1% relative abundance
+- Most prevalent (> 94%): *Faecalibacterium prausnitzii*, *Ruminococcus obeum*, *Oscillospira guillermondii*
+
+### 🔹 Top Differentially Abundant Taxa (BMI groups, BH-FDR corrected)
+
+| Rank | Taxon | KW χ² | FDR p |
+|---|---|---|---|
+| 1 | *Bifidobacterium* | 97.6 | 2.5 × 10⁻¹⁸ |
+| 2 | *Ruminococcus obeum* et rel. | 77.0 | 2.7 × 10⁻¹⁴ |
+| 3 | *Coprococcus eutactus* et rel. | 58.7 | 1.1 × 10⁻¹⁰ |
+| 4 | *Subdoligranulum variable* at rel. | 42.1 | 2.1 × 10⁻⁷ |
+| 5 | *Dorea formicigenerans* et rel. | 36.4 | 2.3 × 10⁻⁶ |
+| 6–12 | … | … | < 0.05 |
+
+*Bifidobacterium* is highest in **lean** subjects and progressively lower toward **obese** groups.
+
+### 🔹 Longitudinal Stability (LMM)
+
+```
+Formula: Shannon ~ Time + Age + Sex + (1 | SubjectID)
+Observations: 244   Groups: 78 subjects
+
+Fixed effects:
+  Time    β = +0.002   p = 0.692  →  microbiome stable over time
+  Age     β = −0.002   p = 0.735  →  non-significant
+  Sex     β = +0.160   p = 0.262  →  non-significant
+
+Random effects:
+  σ²_between-subject = 0.195  (large personal signature)
+  σ²_within-subject  = 0.070  (small temporal fluctuation)
+```
+
+> **Conclusion:** The gut microbiome is **more variable between individuals than within the same individual over months** — confirming a stable personal microbiome signature.
+
+### 🔹 Continuous Associations
+- Shannon diversity **weakly declines with age** (Pearson r = −0.147)
+- Strongest **positive** Spearman ρ with diversity: *Dorea formicigenerans* (ρ ≈ 0.57), *Coprococcus eutactus* (ρ ≈ 0.52), *Ruminococcus obeum* (ρ ≈ 0.51)
+- Strongest **negative** ρ: *Prevotella melaninogenica* (ρ ≈ −0.35) — consistent with low-diversity Prevotella-dominated state
+
+### 🔹 Batch Effect
+- DNA extraction method has a **significant effect on Shannon diversity** (KW p < 2.2 × 10⁻¹⁶)
+- Method **"o"** yields markedly lower diversity than **"p"** and **"r"**
+- ⚠️ **Recommendation:** Always include `DNA_extraction_method` as a covariate in statistical models
+
+---
+
+## 🖼 Figures
+
+### Figure 1 — Alpha Diversity
+![Alpha Diversity](figures/01_alpha_diversity.png)
+*Shannon diversity across BMI groups (KW p = 7.9×10⁻⁸), by sex (Wilcoxon p = 0.039), and Pielou evenness by nationality.*
+
+---
+
+### Figure 2 — Beta Diversity & Ordination
+![Beta Diversity](figures/02_beta_diversity.png)
+*PCoA by nationality (Axis1: 27.3%, Axis2: 19.7%) and BMI group; NMDS ordination (stress = 0.201).*
+
+---
+
+### Figure 3 — Core Microbiome
+![Core Microbiome](figures/03_core_microbiome.png)
+*Blanket analysis showing core size at varying thresholds (top). Prevalence vs abundance scatter: 56 core taxa in red (bottom).*
+
+---
+
+### Figure 4 — Taxonomic Composition
+![Taxonomic Composition](figures/04_taxonomic_composition.png)
+*Relative abundance of top 15 genera averaged by nationality (top) and BMI group (bottom).*
+
+---
+
+### Figure 5 — Differentially Abundant Taxa
+![Group Comparisons](figures/05_group_comparisons.png)
+*Bifidobacterium abundance across BMI groups — most significant taxon (BH-FDR = 2.5×10⁻¹⁸).*
+
+---
+
+### Figure 6 — Annotated Heatmap
+![Heatmap](figures/06_heatmap.png)
+*Top 25 genera (Z-scored log abundance), Ward.D2 hierarchical clustering, annotated by Sex, BMI group, and Nationality.*
+
+---
+
+### Figure 7 — Longitudinal Stability
+![Longitudinal](figures/07_longitudinal.png)
+*Per-subject Shannon trajectories (n = 78) over up to 8.3 months. LMM trend (orange): no significant temporal change (p = 0.692).*
+
+---
+
+### Figure 8 — Continuous Associations
+![Associations](figures/08_associations.png)
+*Shannon vs age (Pearson r = −0.147, top). Spearman ρ of top 15 genera against Shannon diversity (bottom).*
+
+---
+
+### Figure 9 — Batch Effect
+![Batch Effect](figures/09_batch_effect.png)
+*Shannon diversity by DNA extraction method — significant batch effect requiring covariate correction (KW p < 2.2×10⁻¹⁶).*
+
+---
+
+## 🛠 Packages
+
+| Package | Version | Role |
+|---|---|---|
+| `microbiome` | 1.32.0 | Core functions, transforms, core detection |
+| `phyloseq` | 1.54.2 | Data structure, subsetting, ordination |
+| `vegan` | 2.7-3 | PERMANOVA (`adonis2`), NMDS |
+| `ggplot2` | 4.0.3 | All visualisations |
+| `lme4` / `lmerTest` | 2.0-1 / 3.2-1 | Linear mixed-effects models |
+| `pheatmap` | 1.0.13 | Annotated hierarchical heatmap |
+| `ggpubr` | 0.6.3 | Statistical annotations on plots |
+| `patchwork` | 1.3.2 | Multi-panel figure composition |
+| `ggrepel` | 0.9.8 | Non-overlapping taxon labels |
+| `viridis` | 0.6.5 | Perceptually uniform colour scales |
+| `tidyverse` | 2.0.0 | Data wrangling and piping |
+| `RColorBrewer` | 1.1-3 | Annotation colour schemes |
+
+---
+
+## 📖 Citation
+
+**Dataset:**
+```bibtex
+@article{lahti2014tipping,
+  author  = {Lahti, Leo and Salojarvi, Jarkko and Salonen, Anne
+             and Scheffer, Marten and de Vos, Willem M},
+  title   = {Tipping elements in the human intestinal ecosystem},
+  journal = {Nature Communications},
+  volume  = {5},
+  pages   = {4344},
+  year    = {2014},
+  doi     = {10.1038/ncomms5344}
+}
+```
+
+**microbiome R package:**
+```bibtex
+@misc{lahti2017microbiome,
+  author = {Lahti, Leo and Shetty, Sudarshan and others},
+  title  = {Tools for microbiome analysis in {R}},
+  year   = {2017},
+  url    = {http://microbiome.github.com/microbiome}
+}
+```
+
+---
+
+## 📬 Contact
+
+**Pundalik Wayal**
+`your.email@institution.edu`
+GitHub: [@your-username](https://github.com/your-username)
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License** — see [LICENSE](LICENSE) for details.
+
+---
+
+<p align="center">
+  <i>R 4.5.1 · Bioconductor 3.22 · Windows 11 · Completed May 2025</i>
+</p>
